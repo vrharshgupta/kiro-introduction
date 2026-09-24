@@ -8,18 +8,50 @@ const ctx    = canvas.getContext('2d');
 const W = canvas.width;   // 800
 const H = canvas.height;  // 600
 
-const GRAVITY        = 0.45;
-const FLAP_STRENGTH  = -9;
-const PIPE_SPEED     = 3;
-const PIPE_WIDTH     = 80;
-const PIPE_GAP       = 180;   // vertical gap between top and bottom pipe
-const PIPE_INTERVAL  = 1800;  // ms between new pipes
-const SCORE_BAR_H    = 50;    // dark bar at the bottom
-const GAME_H         = H - SCORE_BAR_H; // playable height
+const SCORE_BAR_H = 50;          // dark bar at the bottom
+const GAME_H      = H - SCORE_BAR_H; // playable height
 
 const GHOSTY_W = 48;
 const GHOSTY_H = 48;
 const GHOSTY_X = 160; // fixed horizontal position
+
+const PIPE_WIDTH = 80;
+
+// ─── Difficulty presets ───────────────────────────────────────────────────────
+// Medium values match the original single-speed implementation exactly.
+const DIFFICULTIES = {
+  easy: {
+    label        : 'Easy',
+    pipeSpeed    : 2,
+    gravity      : 0.35,
+    flapStrength : -8,
+    pipeGap      : 210,
+    pipeInterval : 2200,
+    color        : '#4caf50',   // green
+  },
+  medium: {
+    label        : 'Medium',
+    pipeSpeed    : 3,
+    gravity      : 0.45,
+    flapStrength : -9,
+    pipeGap      : 180,
+    pipeInterval : 1800,
+    color        : '#ffe066',   // yellow
+  },
+  hard: {
+    label        : 'Hard',
+    pipeSpeed    : 5,
+    gravity      : 0.58,
+    flapStrength : -10,
+    pipeGap      : 145,
+    pipeInterval : 1300,
+    color        : '#ff6b6b',   // red
+  },
+};
+
+// Active difficulty — set when the player picks a level on the select screen.
+// Defaults to medium so existing constants work before first selection.
+let difficulty = DIFFICULTIES.medium;
 
 // ─── Assets ──────────────────────────────────────────────────────────────────
 const ghostyImg   = new Image();
@@ -31,7 +63,7 @@ jumpSound.volume    = 0.5;
 gameOverSound.volume = 0.6;
 
 // ─── Game State ──────────────────────────────────────────────────────────────
-let state; // 'start' | 'playing' | 'dead'
+let state; // 'select' | 'start' | 'playing' | 'dead'
 let score, highScore;
 let ghosty;
 let pipes;
@@ -132,7 +164,7 @@ function drawCloud(c) {
 function createPipe(x) {
   // gapTop = y coordinate where the gap starts (top of bottom pipe)
   const minGapTop = 60;
-  const maxGapTop = GAME_H - PIPE_GAP - 60;
+  const maxGapTop = GAME_H - difficulty.pipeGap - 60;
   const gapTop = minGapTop + Math.random() * (maxGapTop - minGapTop);
   return { x, gapTop, scored: false };
 }
@@ -168,9 +200,9 @@ function drawPipeSegment(x, y, w, h) {
 }
 
 function drawPipe(pipe) {
-  const topH    = pipe.gapTop;                        // top pipe height
-  const botY    = pipe.gapTop + PIPE_GAP;             // bottom pipe start y
-  const botH    = GAME_H - botY;                      // bottom pipe height
+  const topH    = pipe.gapTop;                              // top pipe height
+  const botY    = pipe.gapTop + difficulty.pipeGap;         // bottom pipe start y
+  const botH    = GAME_H - botY;                            // bottom pipe height
 
   // top pipe (hangs from top)
   drawPipeSegment(pipe.x, 0, PIPE_WIDTH, topH);
@@ -190,14 +222,14 @@ function createGhosty() {
 }
 
 function flapGhosty() {
-  ghosty.vy = FLAP_STRENGTH;
+  ghosty.vy = difficulty.flapStrength;
   // reset and replay each time (handles rapid clicks)
   jumpSound.currentTime = 0;
   jumpSound.play().catch(() => {});
 }
 
 function updateGhosty(dt) {
-  ghosty.vy       += GRAVITY;
+  ghosty.vy       += difficulty.gravity;
   ghosty.y        += ghosty.vy;
   // tilt: nose up when rising, nose down when falling
   ghosty.rotation  = Math.max(-25, Math.min(45, ghosty.vy * 3));
@@ -253,7 +285,7 @@ function checkCollision() {
     // Top pipe: y = 0 to gapTop
     if (hby1 < pipe.gapTop) return true;
     // Bottom pipe: y = gapTop + gap to GAME_H
-    if (hby2 > pipe.gapTop + PIPE_GAP) return true;
+    if (hby2 > pipe.gapTop + difficulty.pipeGap) return true;
   }
   return false;
 }
@@ -268,11 +300,95 @@ function drawScoreBar() {
   ctx.fillStyle = '#444';
   ctx.fillRect(0, GAME_H, W, 2);
 
+  // Difficulty badge on the left
+  ctx.fillStyle = difficulty.color;
+  ctx.font      = 'bold 16px Arial';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(difficulty.label.toUpperCase(), 20, GAME_H + SCORE_BAR_H / 2);
+
+  // Score centred
   ctx.fillStyle = '#ffffff';
   ctx.font      = 'bold 22px Arial';
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
   ctx.fillText(`Score: ${score}  |  High: ${highScore}`, W / 2, GAME_H + SCORE_BAR_H / 2);
+}
+
+// ─── Level select screen ──────────────────────────────────────────────────────
+// Three clickable / keyboard-navigable buttons.
+// Button rects stored so click/touch can hit-test them.
+const LEVEL_BTNS = [
+  { key: 'easy',   label: 'Easy',   desc: 'Relaxed speed, wide gaps',    color: '#4caf50', hoverColor: '#66bb6a' },
+  { key: 'medium', label: 'Medium', desc: 'Balanced challenge',           color: '#ffe066', hoverColor: '#fff176' },
+  { key: 'hard',   label: 'Hard',   desc: 'Fast pipes, narrow gaps',      color: '#ff6b6b', hoverColor: '#ff8a80' },
+];
+
+// Populated each time drawLevelSelect is called so hit-testing is always current.
+let levelBtnRects = [];
+
+function drawLevelSelect() {
+  // Overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, GAME_H);
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Title
+  ctx.fillStyle   = '#ffffff';
+  ctx.font        = 'bold 46px Arial';
+  ctx.shadowColor = 'rgba(0,0,0,0.7)';
+  ctx.shadowBlur  = 10;
+  ctx.fillText('Flappy Kiro', W / 2, GAME_H / 2 - 160);
+  ctx.shadowBlur  = 0;
+
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.font      = '20px Arial';
+  ctx.fillText('Choose your difficulty', W / 2, GAME_H / 2 - 105);
+
+  // Buttons
+  levelBtnRects = [];
+  const btnW = 200, btnH = 64, gap = 24;
+  const totalW = LEVEL_BTNS.length * btnW + (LEVEL_BTNS.length - 1) * gap;
+  const startX = (W - totalW) / 2;
+  const btnY   = GAME_H / 2 - 28;
+
+  LEVEL_BTNS.forEach((btn, i) => {
+    const bx = startX + i * (btnW + gap);
+    levelBtnRects.push({ key: btn.key, x: bx, y: btnY, w: btnW, h: btnH });
+
+    const isActive = difficulty.label === btn.label;
+
+    // Button background
+    ctx.fillStyle = isActive ? btn.hoverColor : btn.color;
+    ctx.beginPath();
+    ctx.roundRect(bx, btnY, btnW, btnH, 10);
+    ctx.fill();
+
+    // Active indicator ring
+    if (isActive) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth   = 3;
+      ctx.beginPath();
+      ctx.roundRect(bx - 2, btnY - 2, btnW + 4, btnH + 4, 12);
+      ctx.stroke();
+    }
+
+    // Label
+    ctx.fillStyle = '#1a1a2e';
+    ctx.font      = 'bold 22px Arial';
+    ctx.fillText(btn.label, bx + btnW / 2, btnY + btnH / 2 - 8);
+
+    // Description
+    ctx.font      = '13px Arial';
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillText(btn.desc, bx + btnW / 2, btnY + btnH / 2 + 14);
+  });
+
+  // Keyboard hint
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.font      = '16px Arial';
+  ctx.fillText('Press 1 · 2 · 3 or click a button', W / 2, GAME_H / 2 + 70);
 }
 
 // ─── Overlay screens ─────────────────────────────────────────────────────────
@@ -359,14 +475,14 @@ function loop(timestamp) {
     updateGhosty(dt);
 
     // Spawn pipes
-    if (timestamp - lastPipeTime > PIPE_INTERVAL) {
+    if (timestamp - lastPipeTime > difficulty.pipeInterval) {
       pipes.push(createPipe(W + 10));
       lastPipeTime = timestamp;
     }
 
     // Move pipes & score
     for (const pipe of pipes) {
-      pipe.x -= PIPE_SPEED;
+      pipe.x -= difficulty.pipeSpeed;
       if (!pipe.scored && pipe.x + PIPE_WIDTH < GHOSTY_X) {
         pipe.scored = true;
         score++;
@@ -410,23 +526,34 @@ function loop(timestamp) {
   drawScoreBar();
 
   // Overlays
-  if (state === 'start') drawStartScreen();
-  if (state === 'dead')  drawDeadScreen();
+  if (state === 'select') drawLevelSelect();
+  if (state === 'start')  drawStartScreen();
+  if (state === 'dead')   drawDeadScreen();
 
   animFrame = requestAnimationFrame(loop);
 }
 
 // ─── Input ───────────────────────────────────────────────────────────────────
+function selectDifficulty(key) {
+  difficulty = DIFFICULTIES[key];
+  state      = 'start';
+}
+
 function handleInput() {
+  if (state === 'select') {
+    // Space / tap on select screen → pick the currently highlighted difficulty
+    state = 'start';
+    return;
+  }
   if (state === 'start') {
-    state = 'playing';
-    lastPipeTime = performance.now(); // give the player a moment before first pipe
+    state        = 'playing';
+    lastPipeTime = performance.now();
     return;
   }
   if (state === 'dead') {
+    // Return to difficulty select on game over
+    state = 'select';
     init();
-    state = 'playing';
-    lastPipeTime = performance.now();
     lastTime = 0;
     return;
   }
@@ -435,24 +562,51 @@ function handleInput() {
   }
 }
 
+function handleClick(clientX, clientY) {
+  const rect   = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const cx     = (clientX - rect.left) * scaleX;
+  const cy     = (clientY - rect.top)  * scaleY;
+
+  if (state === 'select') {
+    for (const btn of levelBtnRects) {
+      if (cx >= btn.x && cx <= btn.x + btn.w && cy >= btn.y && cy <= btn.y + btn.h) {
+        selectDifficulty(btn.key);
+        return;
+      }
+    }
+    // Click outside buttons — do nothing on select screen
+    return;
+  }
+
+  handleInput();
+}
+
 document.addEventListener('keydown', (e) => {
+  if (state === 'select') {
+    if (e.key === '1') { selectDifficulty('easy');   return; }
+    if (e.key === '2') { selectDifficulty('medium'); return; }
+    if (e.key === '3') { selectDifficulty('hard');   return; }
+  }
   if (e.code === 'Space' || e.code === 'ArrowUp') {
     e.preventDefault();
     handleInput();
   }
 });
 
-canvas.addEventListener('click', handleInput);
+canvas.addEventListener('click', (e) => handleClick(e.clientX, e.clientY));
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  handleInput();
+  const t = e.touches[0];
+  handleClick(t.clientX, t.clientY);
 }, { passive: false });
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 function start() {
   bgScratch = buildBackground();
   highScore = 0;
-  state     = 'start';
+  state     = 'select';   // always begin at the difficulty select screen
   init();
   lastTime  = 0;
   animFrame = requestAnimationFrame(loop);
